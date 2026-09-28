@@ -52,6 +52,28 @@ begin
     (v_emp, c_doces, 'Sonho', 'Recheio de creme', 8.00, 'balcao', 2),
     (v_emp, c_doces, 'Pudim (fatia)', '', 10.00, 'balcao', 3);
 
+
+  -- Fotos de exemplo (banco gratuito Pexels, uso comercial liberado)
+  update produtos p set foto = 'https://images.pexels.com/photos/' || f.id || '/pexels-photo-' || f.id || '.jpeg?auto=compress&cs=tinysrgb&w=800'
+    from (values
+    ('Pão na chapa', 17086299),
+    ('Misto quente', 17780276),
+    ('X-Burguer', 2874989),
+    ('X-Bacon', 2983098),
+    ('Omelete completo', 10934498),
+    ('Coxinha', 17409458),
+    ('Café expresso', 9050518),
+    ('Café com leite', 10738363),
+    ('Cappuccino', 531874),
+    ('Suco de laranja 400ml', 8679396),
+    ('Refrigerante lata', 3407777),
+    ('Água sem gás', 12478893),
+    ('Bolo de cenoura (fatia)', 5742606),
+    ('Sonho', 26950774),
+    ('Pudim (fatia)', 34462833)
+    ) as f(nome, id)
+   where p.empresa_id = v_emp and p.nome = f.nome;
+
   if not exists (select 1 from mesas where empresa_id = v_emp) then
     insert into mesas (empresa_id, numero) select v_emp, g from generate_series(1, 10) g;
   end if;

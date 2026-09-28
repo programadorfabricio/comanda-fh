@@ -1,7 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-export const urlFoto = (caminho: string | null | undefined) =>
-  caminho ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/produtos/${caminho}` : null;
+// A foto pode ser um arquivo enviado (Storage) ou um link direto de imagem (https://...)
+export const urlFoto = (caminho: string | null | undefined) => {
+  if (!caminho) return null;
+  if (/^https:\/\//i.test(caminho)) return caminho;
+  return `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/produtos/${caminho}`;
+};
 
 // Diminui a foto no celular antes de enviar (fica leve para o tablet carregar rápido)
 async function reduzir(arquivo: File, lado = 900): Promise<Blob> {
@@ -23,5 +27,5 @@ export async function enviarFoto(supabase: SupabaseClient, empresaId: string, pr
 }
 
 export async function apagarFoto(supabase: SupabaseClient, caminho: string | null | undefined) {
-  if (caminho) await supabase.storage.from("produtos").remove([caminho]);
+  if (caminho && !/^https?:\/\//i.test(caminho)) await supabase.storage.from("produtos").remove([caminho]);
 }
