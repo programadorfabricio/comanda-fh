@@ -30,6 +30,10 @@ export default function GerenciarMesas({ empresaId, mesas }: { empresaId: string
   }
 
   async function alternar(m: Mesa) {
+    const msg = m.ativa
+      ? `Desativar a mesa ${m.numero}? O tablet dessa mesa para de aceitar pedidos.`
+      : `Reativar a mesa ${m.numero}?`;
+    if (!window.confirm(msg)) return;
     const { error } = await supabase.from("mesas").update({ ativa: !m.ativa }).eq("id", m.id);
     if (error) setErro(mensagemErro(error));
     router.refresh();

@@ -290,6 +290,19 @@ returns numeric language sql stable security definer set search_path = public as
   select coalesce(sum(total), 0) from itens where conta_id = p_conta and not cancelado
 $$;
 
+-- Mesa existe e está ligada? (mensagem clara para o tablet)
+create or replace function public._checar_mesa(p_empresa uuid, p_mesa integer)
+returns void language plpgsql stable security definer set search_path = public as $$
+declare v_ativa boolean;
+begin
+  select ativa into v_ativa from mesas where empresa_id = p_empresa and numero = p_mesa;
+  if v_ativa is null then
+    raise exception 'Mesa % não existe. Configure o tablet com uma mesa cadastrada.', p_mesa;
+  elsif not v_ativa then
+    raise exception 'Mesa % está desativada. O dono reativa em Mesas.', p_mesa;
+  end if;
+end $$;
+
 -- Resumo de uma conta (usado pelo tablet, caixa e entrada)
 create or replace function public._resumo_conta(p_conta uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
@@ -483,9 +496,7 @@ begin
     raise exception 'O pedido está vazio.';
   end if;
   if jsonb_array_length(p_itens) > 40 then raise exception 'Pedido grande demais. Divida em partes.'; end if;
-  if p_mesa is not null and not exists (select 1 from mesas where empresa_id = v_emp and numero = p_mesa and ativa) then
-    raise exception 'Mesa % não cadastrada.', p_mesa;
-  end if;
+  if p_mesa is not null then perform _checar_mesa(v_emp, p_mesa); end if;
   -- trava contra pedidos em sequência (toque repetido)
   if (select count(*) from pedidos where conta_id = c.conta_id and criado_em > now() - interval '10 minutes') >= 12 then
     raise exception 'Muitos pedidos seguidos nesta comanda. Chame o garçom.';
@@ -535,9 +546,7 @@ create or replace function public.chamar_garcom(p_mesa integer)
 returns void language plpgsql security definer set search_path = public as $$
 declare v_emp uuid := _exigir(array['mesa','dono','gerente']);
 begin
-  if not exists (select 1 from mesas where empresa_id = v_emp and numero = p_mesa and ativa) then
-    raise exception 'Mesa % não cadastrada.', p_mesa;
-  end if;
+  perform _checar_mesa(v_emp, p_mesa);
   insert into chamados (empresa_id, mesa_numero) values (v_emp, p_mesa)
   on conflict (empresa_id, mesa_numero) where atendido_em is null do nothing;
 end $$;
@@ -799,7 +808,7 @@ begin
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public'
-       and p.proname in ('minha_empresa','meu_papel','_exigir','_achar_comanda','_total_conta','_resumo_conta',
+       and p.proname in ('minha_empresa','meu_papel','_exigir','_achar_comanda','_total_conta','_resumo_conta','_checar_mesa',
                          'gerar_comandas','bloquear_comanda','salvar_config','abrir_comanda','cancelar_abertura',
                          'ler_comanda','enviar_pedido','chamar_garcom','atender_chamado','mudar_pedido',
                          'lancar_item','cancelar_item','comanda_perdida','resumo_conta','fechar_contas','relatorio_vendas')
