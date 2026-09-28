@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: #0c0b0a;
+  color: #ece8e4;
+}
+
+/* Tablet do cliente: claro e com cara de cardápio */
+.tema-mesa {
+  color-scheme: light;
+  background: #fbf7f2;
+  color: #1c1917;
+}
+
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+}
+
+/* Esconde barra de rolagem nas abas que deslizam */
+.sem-barra {
+  scrollbar-width: none;
+}
+.sem-barra::-webkit-scrollbar {
+  display: none;
+}
