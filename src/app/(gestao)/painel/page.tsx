@@ -31,7 +31,12 @@ export default async function Painel() {
       <Titulo sub="Hoje, atualiza sozinho">Painel</Titulo>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Cartao titulo="Vendido hoje" valor={dinheiro(rel.total)} detalhe={`${rel.contas} comanda(s) paga(s)`} destaque />
+        <Cartao
+          titulo="Vendido hoje"
+          valor={dinheiro(rel.total)}
+          detalhe={`${rel.contas} comanda(s) paga(s)${rel.servico > 0 ? ` · inclui ${dinheiro(rel.servico)} de serviço` : ""}`}
+          destaque
+        />
         <Cartao titulo="Ticket médio" valor={dinheiro(ticket)} detalhe="por pagamento" />
         <Cartao titulo="Pessoas dentro agora" valor={abertas.length} detalhe={`${dinheiro(emAberto)} em aberto`} />
         <Cartao

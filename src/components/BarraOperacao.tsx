@@ -24,7 +24,7 @@ export default function BarraOperacao({
         <p className="text-[11px] leading-tight text-orange-400">{empresa}</p>
         <p className="font-semibold leading-tight">{titulo}</p>
       </div>
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
         {children}
         <BotaoSair />
       </div>

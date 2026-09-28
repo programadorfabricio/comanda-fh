@@ -232,7 +232,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
           }}
         />
       )}
-      <div className={`grid flex-1 gap-4 p-4 lg:grid-cols-[22rem_1fr] ${caixa ? "" : "hidden"}`}>
+      <div className={`grid flex-1 gap-4 p-4 lg:grid-cols-[20rem_minmax(0,1fr)] ${caixa ? "" : "hidden"}`}>
         {/* ---------- ESQUERDA: leitura e abertas ---------- */}
         <aside className="space-y-3">
           <CampoLeitura onLer={ler} ocupado={ocupado} manterFoco={!janela} />
@@ -253,7 +253,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
               />
             </div>
             <div className="max-h-[50dvh] overflow-y-auto">
-              {listaAbertas.length === 0 && <p className="py-4 text-center text-sm text-zinc-500">Nenhuma.</p>}
+              {listaAbertas.length === 0 && <p className="py-4 text-center text-sm text-zinc-500">{abertas.length ? "Nenhuma outra." : "Nenhuma."}</p>}
               {listaAbertas.map((a) => (
                 <button key={a.id} onClick={() => escolherAberta(a)} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-white/5">
                   <b className="w-12 text-base">#{a.comanda_numero}</b>
@@ -270,7 +270,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
         </aside>
 
         {/* ---------- DIREITA: conta e pagamento ---------- */}
-        <main className="space-y-4">
+        <main className="min-w-0 space-y-4">
           {erro && <p className="rounded-xl bg-rose-500/15 px-4 py-3 text-rose-200">{erro}</p>}
 
           {pago && (
@@ -295,7 +295,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
           )}
 
           {selecao.length > 0 && (
-            <div className="grid gap-4 xl:grid-cols-[1fr_24rem]">
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
               <div className="space-y-3">
                 {selecao.map((c) => (
                   <section key={c.conta_id} className="rounded-2xl border border-white/10 bg-white/[0.03]">
