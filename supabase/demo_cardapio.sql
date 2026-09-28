@@ -74,6 +74,12 @@ begin
     ) as f(nome, id)
    where p.empresa_id = v_emp and p.nome = f.nome;
 
+  -- Pixabay (licença livre)
+  update produtos set foto = 'https://cdn.pixabay.com/photo/2018/12/08/01/11/cheese-bread-3862706_1280.jpg'
+   where empresa_id = v_emp and nome = 'Pão de queijo (porção)';
+  update produtos set foto = 'https://cdn.pixabay.com/photo/2022/07/26/18/35/flatbread-7346467_1280.jpg'
+   where empresa_id = v_emp and nome = 'Esfiha de carne';
+
   if not exists (select 1 from mesas where empresa_id = v_emp) then
     insert into mesas (empresa_id, numero) select v_emp, g from generate_series(1, 10) g;
   end if;
