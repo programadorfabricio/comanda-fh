@@ -25,12 +25,14 @@ export type ItemConta = {
 };
 
 export type ResumoConta = {
-  conta_id: string;
+  conta_id: string | null; // null = comanda ainda livre (abre no 1º pedido)
   comanda: number;
   status: string;
   mesa: number | null;
   aberta_em: string;
   total: number;
+  taxa_servico: number;
+  base_servico: number;
   itens: ItemConta[];
 };
 

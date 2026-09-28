@@ -18,6 +18,7 @@ begin
 
   -- limpa movimento e cardápio
   delete from fechamentos where empresa_id = v_emp;
+  delete from caixas where empresa_id = v_emp;
   delete from contas where empresa_id = v_emp;
   delete from chamados where empresa_id = v_emp;
   update comandas set status = 'livre', conta_id = null, perdida = false where empresa_id = v_emp;

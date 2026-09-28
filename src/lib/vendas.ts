@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export type Relatorio = {
   total: number;
   desconto: number;
+  servico: number;
   contas: number;
   pagamentos: number;
   por_forma: Record<string, number>;

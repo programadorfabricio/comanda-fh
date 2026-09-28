@@ -2,7 +2,16 @@ import { redirect } from "next/navigation";
 import { criarClienteServidor } from "@/lib/supabase/server";
 import { ehGestao, telaDoPapel, type Papel } from "@/lib/papeis";
 
-export type Empresa = { id: string; nome: string; usa_quilo: boolean; preco_quilo: number; multa_comanda: number };
+export type Empresa = {
+  id: string;
+  nome: string;
+  usa_quilo: boolean;
+  preco_quilo: number;
+  multa_comanda: number;
+  abrir_no_pedido: boolean;
+  garcom_lanca: boolean;
+  taxa_servico: number;
+};
 
 // Usuário logado + empresa + papel. Sem login -> /login
 export async function contexto() {
@@ -14,7 +23,7 @@ export async function contexto() {
 
   const { data } = await supabase
     .from("usuarios_empresa")
-    .select("papel, nome, empresa:empresas(id, nome, usa_quilo, preco_quilo, multa_comanda)")
+    .select("papel, nome, empresa:empresas(id, nome, usa_quilo, preco_quilo, multa_comanda, abrir_no_pedido, garcom_lanca, taxa_servico)")
     .eq("user_id", user.id)
     .maybeSingle();
 

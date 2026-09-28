@@ -6,6 +6,7 @@ import { bip, liberarSom, useAoVivo, useTelaAcesa } from "@/lib/aoVivo";
 import { mensagemErro, minutosDesde } from "@/lib/formato";
 import type { Empresa } from "@/lib/contexto";
 import BarraOperacao from "@/components/BarraOperacao";
+import LancarPedido from "./LancarPedido";
 
 type Pedido = {
   id: string;
@@ -27,6 +28,8 @@ export default function Garcom({ empresa, gestao, mesas }: { empresa: Empresa; g
   const [escolhendo, setEscolhendo] = useState(false);
   const [som, setSom] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [lancando, setLancando] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [, setTique] = useState(0);
   const vistos = useRef<Set<string> | null>(null);
   const somRef = useRef(false);
@@ -129,7 +132,9 @@ export default function Garcom({ empresa, gestao, mesas }: { empresa: Empresa; g
       )}
       {erro && <p className="bg-rose-500/20 px-4 py-2 text-sm text-rose-200">{erro}</p>}
 
-      <main className="mx-auto w-full max-w-xl flex-1 space-y-5 p-3">
+      {aviso && <p className="bg-emerald-500 px-4 py-2.5 text-center font-semibold text-black">{aviso}</p>}
+
+      <main className={`mx-auto w-full max-w-xl flex-1 space-y-5 p-3 ${empresa.garcom_lanca ? "pb-24" : ""}`}>
         {meusChamados.length > 0 && (
           <section className="space-y-2">
             <h2 className="px-1 text-sm font-semibold text-amber-300">Chamando ({meusChamados.length})</h2>
@@ -192,6 +197,31 @@ export default function Garcom({ empresa, gestao, mesas }: { empresa: Empresa; g
           </section>
         )}
       </main>
+
+      {empresa.garcom_lanca && !lancando && (
+        <div className="fixed inset-x-0 bottom-0 z-40 p-3">
+          <button
+            onClick={() => {
+              setAviso(null);
+              setLancando(true);
+            }}
+            className="mx-auto block w-full max-w-xl rounded-2xl bg-orange-500 py-4 text-lg font-bold text-black shadow-2xl"
+          >
+            + Lançar pedido
+          </button>
+        </div>
+      )}
+      {lancando && (
+        <LancarPedido
+          mesas={mesas}
+          onFechar={() => setLancando(false)}
+          onEnviado={(m) => {
+            setLancando(false);
+            setAviso(m);
+            setTimeout(() => setAviso(null), 5000);
+          }}
+        />
+      )}
 
       {escolhendo && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center" onClick={() => setEscolhendo(false)}>

@@ -188,6 +188,52 @@ create table if not exists public.chamados (
 create unique index if not exists uq_chamado_aberto on public.chamados (empresa_id, mesa_numero) where atendido_em is null;
 
 -- -------------------------------------------------------------
+-- VERSÃO 2: opções do estabelecimento, caixa e taxa de serviço
+-- -------------------------------------------------------------
+alter table public.empresas add column if not exists abrir_no_pedido boolean not null default false; -- sem entrada: abre no 1º pedido
+alter table public.empresas add column if not exists garcom_lanca boolean not null default false;    -- garçom pode lançar pedido
+alter table public.empresas add column if not exists taxa_servico numeric(5,2) not null default 0;   -- % (0 = não cobra)
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'empresas_taxa_servico_ck') then
+    alter table public.empresas add constraint empresas_taxa_servico_ck check (taxa_servico between 0 and 20);
+  end if;
+end $$;
+
+-- Turno do caixa: abre com troco, fecha contando a gaveta
+create table if not exists public.caixas (
+  id                 uuid primary key default gen_random_uuid(),
+  empresa_id         uuid not null references public.empresas(id) on delete cascade,
+  troco_inicial      numeric(10,2) not null default 0 check (troco_inicial >= 0),
+  aberto_em          timestamptz not null default now(),
+  aberto_por         uuid references auth.users(id) on delete set null,
+  fechado_em         timestamptz,
+  fechado_por        uuid references auth.users(id) on delete set null,
+  esperado_dinheiro  numeric(10,2),
+  contado_dinheiro   numeric(10,2),
+  observacao         text not null default ''
+);
+create unique index if not exists uq_caixa_aberto on public.caixas (empresa_id) where fechado_em is null;
+create index if not exists idx_caixas_empresa on public.caixas (empresa_id, aberto_em desc);
+
+-- Sangria (tirou dinheiro da gaveta) e reforço (colocou)
+create table if not exists public.caixa_movimentos (
+  id          uuid primary key default gen_random_uuid(),
+  empresa_id  uuid not null references public.empresas(id) on delete cascade,
+  caixa_id    uuid not null references public.caixas(id) on delete cascade,
+  tipo        text not null check (tipo in ('sangria','reforco')),
+  valor       numeric(10,2) not null check (valor > 0),
+  motivo      text not null default '',
+  criado_por  uuid references auth.users(id) on delete set null,
+  criado_em   timestamptz not null default now()
+);
+create index if not exists idx_caixa_mov on public.caixa_movimentos (caixa_id);
+
+alter table public.fechamentos add column if not exists servico numeric(10,2) not null default 0;
+alter table public.fechamentos add column if not exists caixa_id uuid references public.caixas(id) on delete set null;
+create index if not exists idx_fechamentos_caixa on public.fechamentos (caixa_id);
+
+-- -------------------------------------------------------------
 -- QUEM É QUEM
 -- -------------------------------------------------------------
 create or replace function public.minha_empresa()
@@ -232,6 +278,8 @@ alter table public.itens                  enable row level security;
 alter table public.fechamentos            enable row level security;
 alter table public.fechamento_pagamentos  enable row level security;
 alter table public.chamados               enable row level security;
+alter table public.caixas                 enable row level security;
+alter table public.caixa_movimentos       enable row level security;
 
 drop policy if exists ler on public.empresas;
 create policy ler on public.empresas for select to authenticated using (id = minha_empresa());
@@ -251,6 +299,12 @@ begin
     execute format($p$create policy editar on public.%I for all to authenticated
       using (empresa_id = minha_empresa() and meu_papel() in ('dono','gerente'))
       with check (empresa_id = minha_empresa() and meu_papel() in ('dono','gerente'))$p$, t);
+  end loop;
+
+  foreach t in array array['caixas','caixa_movimentos'] loop
+    execute format('drop policy if exists ler on public.%I', t);
+    execute format($p$create policy ler on public.%I for select to authenticated
+      using (empresa_id = minha_empresa() and meu_papel() in ('caixa','dono','gerente'))$p$, t);
   end loop;
 
   foreach t in array array['comandas','contas','pedidos','itens','fechamentos','fechamento_pagamentos','chamados'] loop
@@ -313,6 +367,8 @@ returns jsonb language sql stable security definer set search_path = public as $
     'mesa', c.mesa_numero,
     'aberta_em', c.aberta_em,
     'total', _total_conta(c.id),
+    'taxa_servico', (select taxa_servico from empresas where id = c.empresa_id),
+    'base_servico', (select coalesce(sum(total), 0) from itens where conta_id = c.id and not cancelado and tipo <> 'multa'),
     'itens', coalesce((
       select jsonb_agg(jsonb_build_object(
         'id', i.id, 'descricao', i.descricao, 'quantidade', i.quantidade, 'preco_unit', i.preco_unit,
@@ -322,6 +378,14 @@ returns jsonb language sql stable security definer set search_path = public as $
       from itens i left join pedidos p on p.id = i.pedido_id
       where i.conta_id = c.id), '[]'::jsonb)
   ) from contas c where c.id = p_conta
+$$;
+
+-- Comanda ainda sem conta (modo sem entrada: abre no 1º pedido)
+create or replace function public._resumo_livre(p_empresa uuid, p_numero integer)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('conta_id', null, 'comanda', p_numero, 'status', 'livre', 'mesa', null,
+    'aberta_em', null, 'total', 0, 'base_servico', 0, 'itens', '[]'::jsonb,
+    'taxa_servico', (select taxa_servico from empresas where id = p_empresa))
 $$;
 
 -- -------------------------------------------------------------
@@ -364,14 +428,20 @@ begin
   end if;
 end $$;
 
-create or replace function public.salvar_config(p_nome text, p_usa_quilo boolean, p_preco_quilo numeric, p_multa numeric)
+drop function if exists public.salvar_config(text, boolean, numeric, numeric);
+create or replace function public.salvar_config(
+  p_nome text, p_usa_quilo boolean, p_preco_quilo numeric, p_multa numeric,
+  p_abrir_no_pedido boolean default false, p_garcom_lanca boolean default false, p_taxa_servico numeric default 0)
 returns void language plpgsql security definer set search_path = public as $$
 declare v_emp uuid := _exigir(array['dono']);
 begin
   if coalesce(trim(p_nome), '') = '' then raise exception 'Informe o nome.'; end if;
   if p_preco_quilo < 0 or p_multa < 0 then raise exception 'Valores não podem ser negativos.'; end if;
+  if coalesce(p_taxa_servico, 0) < 0 or coalesce(p_taxa_servico, 0) > 20 then raise exception 'Taxa de serviço entre 0 e 20%%.'; end if;
   update empresas set nome = trim(p_nome), usa_quilo = p_usa_quilo,
-         preco_quilo = coalesce(p_preco_quilo, 0), multa_comanda = coalesce(p_multa, 0)
+         preco_quilo = coalesce(p_preco_quilo, 0), multa_comanda = coalesce(p_multa, 0),
+         abrir_no_pedido = coalesce(p_abrir_no_pedido, false), garcom_lanca = coalesce(p_garcom_lanca, false),
+         taxa_servico = round(coalesce(p_taxa_servico, 0), 2)
    where id = v_emp;
 end $$;
 
@@ -450,6 +520,10 @@ begin
   end if;
   if c.status = 'bloqueada' then raise exception 'Comanda % está bloqueada. Procure o caixa.', c.numero; end if;
   if c.status <> 'aberta' or c.conta_id is null then
+    -- sem entrada: a comanda abre sozinha no primeiro pedido
+    if v_papel in ('mesa','garcom','dono','gerente') and (select abrir_no_pedido from empresas where id = v_emp) then
+      return _resumo_livre(v_emp, c.numero);
+    end if;
     raise exception 'Comanda % não foi aberta na entrada.', c.numero;
   end if;
   return _resumo_conta(c.conta_id);
@@ -488,9 +562,21 @@ begin
   else
     c := _achar_comanda(v_emp, p_leitura, false);
   end if;
+  if v_papel = 'garcom' and not (select garcom_lanca from empresas where id = v_emp) then
+    raise exception 'Aqui o garçom não lança pedido. O dono pode ligar em Configurações.';
+  end if;
   select * into c from comandas where id = c.id for update;
+  if c.status = 'bloqueada' then raise exception 'Comanda % está bloqueada. Procure o caixa.', c.numero; end if;
   if c.status <> 'aberta' or c.conta_id is null then
-    raise exception 'Comanda % não está aberta.', c.numero;
+    if v_papel in ('mesa','garcom','dono','gerente') and not coalesce(p_no_caixa, false)
+       and (select abrir_no_pedido from empresas where id = v_emp) then
+      -- sem entrada: abre agora (se o pedido der erro, a abertura é desfeita junto)
+      insert into contas (empresa_id, comanda_id, comanda_numero, aberta_por)
+      values (v_emp, c.id, c.numero, auth.uid()) returning id into c.conta_id;
+      update comandas set status = 'aberta', conta_id = c.conta_id where id = c.id;
+    else
+      raise exception 'Comanda % não está aberta.', c.numero;
+    end if;
   end if;
   if jsonb_typeof(p_itens) <> 'array' or jsonb_array_length(p_itens) = 0 then
     raise exception 'O pedido está vazio.';
@@ -686,10 +772,15 @@ end $$;
 -- Fecha uma ou várias contas de uma vez
 -- p_pagamentos: [{"forma": "pix", "valor": 30.00}, {"forma": "dinheiro", "valor": 50}]
 -- Em dinheiro pode vir a mais: a diferença vira troco.
-create or replace function public.fechar_contas(p_contas uuid[], p_pagamentos jsonb, p_desconto numeric)
+drop function if exists public.fechar_contas(uuid[], jsonb, numeric);
+create or replace function public.fechar_contas(p_contas uuid[], p_pagamentos jsonb, p_desconto numeric, p_servico boolean default false)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_emp uuid := _exigir(array['caixa','dono','gerente']);
+  v_caixa uuid;
+  v_taxa numeric;
+  v_base numeric := 0;
+  v_serv numeric := 0;
   v_sub numeric := 0;
   v_desc numeric := round(coalesce(p_desconto, 0), 2);
   v_total numeric;
@@ -703,18 +794,23 @@ declare
   v_valor numeric;
 begin
   if p_contas is null or array_length(p_contas, 1) is null then raise exception 'Nenhuma comanda selecionada.'; end if;
+  select id into v_caixa from caixas where empresa_id = v_emp and fechado_em is null;
+  if v_caixa is null then raise exception 'Abra o caixa antes de receber.'; end if;
+  select taxa_servico into v_taxa from empresas where id = v_emp;
 
   for ct in select * from contas where id = any(p_contas) order by comanda_numero for update loop
     if ct.empresa_id <> v_emp then raise exception 'Conta de outra empresa.'; end if;
     if ct.status <> 'aberta' then raise exception 'A comanda % já foi fechada.', ct.comanda_numero; end if;
     v_sub := v_sub + _total_conta(ct.id);
+    v_base := v_base + (select coalesce(sum(total), 0) from itens where conta_id = ct.id and not cancelado and tipo <> 'multa');
   end loop;
   if (select count(*) from contas where id = any(p_contas)) <> array_length(p_contas, 1) then
     raise exception 'Conta não encontrada.';
   end if;
 
-  if v_desc < 0 or v_desc > v_sub then raise exception 'Desconto inválido.'; end if;
-  v_total := v_sub - v_desc;
+  if coalesce(p_servico, false) and v_taxa > 0 then v_serv := round(v_base * v_taxa / 100, 2); end if;
+  if v_desc < 0 or v_desc > v_sub + v_serv then raise exception 'Desconto inválido.'; end if;
+  v_total := v_sub + v_serv - v_desc;
 
   if jsonb_typeof(coalesce(p_pagamentos, '[]'::jsonb)) <> 'array' then raise exception 'Pagamento inválido.'; end if;
   for x in select * from jsonb_array_elements(coalesce(p_pagamentos, '[]'::jsonb)) loop
@@ -734,8 +830,8 @@ begin
     raise exception 'Valor a mais só pode ser em dinheiro (troco). Confira os valores.';
   end if;
 
-  insert into fechamentos (empresa_id, subtotal, desconto, total, criado_por)
-  values (v_emp, v_sub, v_desc, v_total, auth.uid()) returning id into v_fech;
+  insert into fechamentos (empresa_id, subtotal, desconto, servico, total, criado_por, caixa_id)
+  values (v_emp, v_sub, v_desc, v_serv, v_total, auth.uid(), v_caixa) returning id into v_fech;
 
   -- grava cada forma; o troco sai da parte em dinheiro
   for x in select * from jsonb_array_elements(coalesce(p_pagamentos, '[]'::jsonb)) loop
@@ -758,7 +854,105 @@ begin
    where conta_id = any(p_contas);
 
   return jsonb_build_object('fechamento_id', v_fech, 'subtotal', v_sub, 'desconto', v_desc,
-                            'total', v_total, 'troco', v_pago - v_total);
+                            'servico', v_serv, 'total', v_total, 'troco', v_pago - v_total);
+end $$;
+
+-- -------------------------------------------------------------
+-- CAIXA: abrir, sangria/reforço, fechar
+-- -------------------------------------------------------------
+create or replace function public._resumo_caixa(p_caixa uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  with cx as (select * from caixas where id = p_caixa),
+  pag as (
+    select fp.forma, sum(fp.valor) soma
+      from fechamento_pagamentos fp join fechamentos f on f.id = fp.fechamento_id
+     where f.caixa_id = p_caixa group by fp.forma),
+  mov as (select * from caixa_movimentos where caixa_id = p_caixa),
+  calc as (
+    select (select troco_inicial from cx)
+         + coalesce((select soma from pag where forma = 'dinheiro'), 0)
+         - coalesce((select sum(valor) from mov where tipo = 'sangria'), 0)
+         + coalesce((select sum(valor) from mov where tipo = 'reforco'), 0) as esperado)
+  select jsonb_build_object(
+    'id', cx.id,
+    'aberto_em', cx.aberto_em,
+    'fechado_em', cx.fechado_em,
+    'troco_inicial', cx.troco_inicial,
+    'pagamentos', (select count(*) from fechamentos where caixa_id = p_caixa),
+    'total', (select coalesce(sum(total), 0) from fechamentos where caixa_id = p_caixa),
+    'servico', (select coalesce(sum(servico), 0) from fechamentos where caixa_id = p_caixa),
+    'desconto', (select coalesce(sum(desconto), 0) from fechamentos where caixa_id = p_caixa),
+    'por_forma', coalesce((select jsonb_object_agg(forma, soma) from pag), '{}'::jsonb),
+    'sangrias', (select coalesce(sum(valor), 0) from mov where tipo = 'sangria'),
+    'reforcos', (select coalesce(sum(valor), 0) from mov where tipo = 'reforco'),
+    'movimentos', coalesce((select jsonb_agg(jsonb_build_object('tipo', tipo, 'valor', valor, 'motivo', motivo, 'em', criado_em) order by criado_em) from mov), '[]'::jsonb),
+    'esperado_dinheiro', coalesce(cx.esperado_dinheiro, (select esperado from calc)),
+    'contado_dinheiro', cx.contado_dinheiro,
+    'diferenca', case when cx.contado_dinheiro is null then null else cx.contado_dinheiro - cx.esperado_dinheiro end,
+    'observacao', cx.observacao,
+    'aberto_por', (select nome from usuarios_empresa where user_id = cx.aberto_por),
+    'fechado_por', (select nome from usuarios_empresa where user_id = cx.fechado_por)
+  ) from cx
+$$;
+
+create or replace function public.caixa_atual()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v_emp uuid := _exigir(array['caixa','dono','gerente']); v_id uuid;
+begin
+  select id into v_id from caixas where empresa_id = v_emp and fechado_em is null;
+  if v_id is null then return null; end if;
+  return _resumo_caixa(v_id);
+end $$;
+
+create or replace function public.abrir_caixa(p_troco numeric)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_emp uuid := _exigir(array['caixa','dono','gerente']); v_id uuid;
+begin
+  if p_troco is null or p_troco < 0 or p_troco > 100000 then raise exception 'Troco inicial inválido.'; end if;
+  if exists (select 1 from caixas where empresa_id = v_emp and fechado_em is null) then
+    raise exception 'O caixa já está aberto.';
+  end if;
+  insert into caixas (empresa_id, troco_inicial, aberto_por) values (v_emp, round(p_troco, 2), auth.uid()) returning id into v_id;
+  return _resumo_caixa(v_id);
+end $$;
+
+create or replace function public.movimento_caixa(p_tipo text, p_valor numeric, p_motivo text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_emp uuid := _exigir(array['caixa','dono','gerente']); v_id uuid;
+begin
+  select id into v_id from caixas where empresa_id = v_emp and fechado_em is null for update;
+  if v_id is null then raise exception 'O caixa está fechado.'; end if;
+  if p_tipo not in ('sangria','reforco') then raise exception 'Tipo inválido.'; end if;
+  if p_valor is null or p_valor <= 0 or p_valor > 100000 then raise exception 'Valor inválido.'; end if;
+  if p_tipo = 'sangria' and round(p_valor, 2) > (_resumo_caixa(v_id)->>'esperado_dinheiro')::numeric then
+    raise exception 'Não tem esse valor em dinheiro no caixa.';
+  end if;
+  insert into caixa_movimentos (empresa_id, caixa_id, tipo, valor, motivo, criado_por)
+  values (v_emp, v_id, p_tipo, round(p_valor, 2), left(coalesce(trim(p_motivo), ''), 140), auth.uid());
+  return _resumo_caixa(v_id);
+end $$;
+
+create or replace function public.fechar_caixa(p_contado numeric, p_observacao text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_emp uuid := _exigir(array['caixa','dono','gerente']); v_id uuid; v_esp numeric;
+begin
+  select id into v_id from caixas where empresa_id = v_emp and fechado_em is null for update;
+  if v_id is null then raise exception 'O caixa já está fechado.'; end if;
+  if p_contado is null or p_contado < 0 then raise exception 'Informe quanto tem em dinheiro na gaveta.'; end if;
+  v_esp := (_resumo_caixa(v_id)->>'esperado_dinheiro')::numeric;
+  update caixas set fechado_em = now(), fechado_por = auth.uid(), esperado_dinheiro = v_esp,
+         contado_dinheiro = round(p_contado, 2), observacao = left(coalesce(trim(p_observacao), ''), 280)
+   where id = v_id;
+  return _resumo_caixa(v_id);
+end $$;
+
+-- Caixas abertos no período (relatório do dono)
+create or replace function public.caixas_periodo(p_inicio timestamptz, p_fim timestamptz)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v_emp uuid := _exigir(array['dono','gerente']);
+begin
+  return coalesce((select jsonb_agg(_resumo_caixa(id) order by aberto_em desc)
+    from caixas where empresa_id = v_emp and aberto_em >= p_inicio and aberto_em < p_fim), '[]'::jsonb);
 end $$;
 
 -- -------------------------------------------------------------
@@ -771,6 +965,7 @@ begin
   return jsonb_build_object(
     'total', (select coalesce(sum(total), 0) from fechamentos where empresa_id = v_emp and criado_em >= p_inicio and criado_em < p_fim),
     'desconto', (select coalesce(sum(desconto), 0) from fechamentos where empresa_id = v_emp and criado_em >= p_inicio and criado_em < p_fim),
+    'servico', (select coalesce(sum(servico), 0) from fechamentos where empresa_id = v_emp and criado_em >= p_inicio and criado_em < p_fim),
     'contas', (select count(*) from contas where empresa_id = v_emp and status = 'fechada' and fechada_em >= p_inicio and fechada_em < p_fim),
     'pagamentos', (select count(*) from fechamentos where empresa_id = v_emp and criado_em >= p_inicio and criado_em < p_fim),
     'por_forma', coalesce((
@@ -811,7 +1006,8 @@ begin
        and p.proname in ('minha_empresa','meu_papel','_exigir','_achar_comanda','_total_conta','_resumo_conta','_checar_mesa',
                          'gerar_comandas','bloquear_comanda','salvar_config','abrir_comanda','cancelar_abertura',
                          'ler_comanda','enviar_pedido','chamar_garcom','atender_chamado','mudar_pedido',
-                         'lancar_item','cancelar_item','comanda_perdida','resumo_conta','fechar_contas','relatorio_vendas')
+                         'lancar_item','cancelar_item','comanda_perdida','resumo_conta','fechar_contas','relatorio_vendas',
+                         '_resumo_livre','_resumo_caixa','caixa_atual','abrir_caixa','movimento_caixa','fechar_caixa','caixas_periodo')
   loop
     execute format('revoke all on function %s from public, anon', f.sig);
     if f.proname like '\_%' escape '\' then
@@ -828,7 +1024,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['pedidos','itens','contas','comandas','chamados','produtos'] loop
+  foreach t in array array['pedidos','itens','contas','comandas','chamados','produtos','caixas','caixa_movimentos'] loop
     if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t) then
       execute format('alter publication supabase_realtime add table public.%I', t);
     end if;

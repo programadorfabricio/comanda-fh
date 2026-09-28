@@ -4,6 +4,7 @@ import { relatorio } from "@/lib/vendas";
 import { dataHora, dinheiro, diaSP, FORMAS } from "@/lib/formato";
 import { Cartao, Titulo } from "@/components/ui";
 import BotaoImprimir from "../comandas/imprimir/BotaoImprimir";
+import { ResumoTurno, type ResumoCaixa } from "@/app/caixa/Turno";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,7 @@ export default async function Vendas({ searchParams }: { searchParams: Promise<{
   const inicio = diaSP(de).inicio;
   const fim = diaSP(ate).fim;
 
-  const [rel, { data: fechs }] = await Promise.all([
+  const [rel, { data: fechs }, { data: caixas }] = await Promise.all([
     relatorio(supabase, inicio, fim),
     supabase
       .from("fechamentos")
@@ -40,7 +41,9 @@ export default async function Vendas({ searchParams }: { searchParams: Promise<{
       .lt("criado_em", fim.toISOString())
       .order("criado_em", { ascending: false })
       .limit(500),
+    supabase.rpc("caixas_periodo", { p_inicio: inicio.toISOString(), p_fim: fim.toISOString() }),
   ]);
+  const turnos = (caixas ?? []) as ResumoCaixa[];
 
   const primeiroDoMes = `${hoje.slice(0, 8)}01`;
   const atalhos = [
@@ -87,7 +90,11 @@ export default async function Vendas({ searchParams }: { searchParams: Promise<{
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Cartao titulo="Total recebido" valor={dinheiro(rel.total)} destaque detalhe={rel.desconto > 0 ? `${dinheiro(rel.desconto)} em descontos` : undefined} />
+        <Cartao titulo="Total recebido" valor={dinheiro(rel.total)} destaque detalhe={
+            [rel.servico > 0 ? `${dinheiro(rel.servico)} de serviço` : "", rel.desconto > 0 ? `${dinheiro(rel.desconto)} em descontos` : ""].filter(Boolean).join(" · ") ||
+            undefined
+          }
+        />
         <Cartao titulo="Comandas pagas" valor={rel.contas} detalhe={`${rel.pagamentos} pagamento(s)`} />
         <Cartao titulo="Ticket médio" valor={dinheiro(ticket)} detalhe="por pagamento" />
         <Cartao
@@ -149,6 +156,20 @@ export default async function Vendas({ searchParams }: { searchParams: Promise<{
           {rel.top.length === 0 && <p className="text-sm text-zinc-500">Nada no período.</p>}
         </div>
       </section>
+
+      {turnos.length > 0 && (
+        <section>
+          <h2 className="mb-3 font-semibold">Caixas do período ({turnos.length})</h2>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {turnos.map((t) => (
+              <div key={t.id} className={`rounded-xl border p-4 ${t.fechado_em ? "border-white/10 bg-white/[0.03]" : "border-orange-500/40 bg-orange-500/[0.06]"}`}>
+                {!t.fechado_em && <p className="mb-1 text-xs font-semibold text-orange-300">ABERTO AGORA</p>}
+                <ResumoTurno c={t} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
         <h2 className="mb-3 font-semibold">Pagamentos ({(fechs ?? []).length})</h2>

@@ -9,12 +9,14 @@ export const dynamic = "force-dynamic";
 export default async function Painel() {
   const { supabase, empresa } = await exigirTela([]);
   const { inicio, fim } = diaSP();
-  const [rel, abertas, { data: cozinha }, { count: chamados }] = await Promise.all([
+  const [rel, abertas, { data: cozinha }, { count: chamados }, { data: caixa }] = await Promise.all([
     relatorio(supabase, inicio, fim),
     contasAbertas(supabase),
     supabase.from("pedidos").select("id, setor, status, criado_em, mesa_numero, comanda_numero").in("status", ["novo", "preparando", "pronto"]).order("criado_em"),
     supabase.from("chamados").select("id", { count: "exact", head: true }).is("atendido_em", null),
+    supabase.rpc("caixa_atual"),
   ]);
+  const cx = caixa as { aberto_em: string; esperado_dinheiro: number } | null;
 
   const agora = Date.now();
   const naFila = (cozinha ?? []).filter((p) => p.status !== "pronto");
@@ -40,6 +42,12 @@ export default async function Painel() {
           }
         />
       </div>
+
+      <p className={`rounded-xl px-4 py-2.5 text-sm ${cx ? "bg-emerald-500/10 text-emerald-200" : "bg-white/[0.04] text-zinc-400"}`}>
+        {cx
+          ? `Caixa aberto desde ${hora(cx.aberto_em)} · deveria ter ${dinheiro(cx.esperado_dinheiro)} em dinheiro na gaveta`
+          : "Caixa fechado. Quem estiver no caixa abre com o troco inicial antes de receber."}
+      </p>
 
       {!!chamados && (
         <p className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">

@@ -474,6 +474,11 @@ export default function Mesa({ empresa, gestao, email }: { empresa: Empresa; ges
             <span>Total</span>
             <span>{dinheiro(conta.total)}</span>
           </div>
+          {Number(conta.taxa_servico) > 0 && Number(conta.base_servico) > 0 && (
+            <p className="mt-2 text-center text-stone-500">
+              + taxa de serviço opcional de {String(conta.taxa_servico).replace(".", ",")}% ({dinheiro(Math.round(Number(conta.base_servico) * Number(conta.taxa_servico)) / 100)})
+            </p>
+          )}
           <p className="mt-3 text-center text-stone-500">O pagamento é feito no caixa, na saída. Entregue sua comanda lá.</p>
           <button onClick={() => setVerConta(false)} className="mt-4 w-full rounded-2xl bg-stone-900 py-4 text-lg font-semibold text-white">
             Voltar ao cardápio

@@ -33,6 +33,19 @@ Next.js 16 + Supabase + Vercel. Um produto da FH Digital.
 
 O dono abre qualquer tela pelo menu **Telas** (bom para demonstrar tudo num só aparelho).
 
+## Opções por estabelecimento (Configurações)
+
+- **Sem entrada:** para lugares sem catraca/porteiro. A comanda abre sozinha no primeiro pedido do tablet (ou do garçom).
+- **Garçom lança pedido:** botão "Lançar pedido" no celular do garçom (escolhe a mesa, digita a comanda, escolhe os itens).
+- **Taxa de serviço:** % sobre o consumo (não incide sobre multa). O caixa vê marcada e desmarca se o cliente não quiser.
+- **Por quilo** e **multa por comanda perdida**.
+
+## Caixa (turno)
+
+O caixa só recebe com o turno aberto: abre com o troco inicial, registra sangria/reforço e, no fim,
+fecha contando o dinheiro da gaveta. O sistema mostra quanto deveria ter e se sobrou ou faltou.
+O histórico de turnos aparece em **Vendas**.
+
 ## Colocar no ar (primeira vez)
 
 1. **Supabase**: crie um projeto novo (`comanda-fh`). No SQL Editor, rode `supabase/comanda_schema.sql`.

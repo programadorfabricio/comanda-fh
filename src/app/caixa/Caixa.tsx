@@ -9,11 +9,12 @@ import type { Empresa } from "@/lib/contexto";
 import BarraOperacao from "@/components/BarraOperacao";
 import CampoLeitura from "@/components/CampoLeitura";
 import LeitorQR from "@/components/LeitorQR";
+import { AbrirCaixa, FecharCaixa, MovimentoCaixa, type ResumoCaixa } from "./Turno";
 
 type Aberta = { id: string; comanda_numero: number; mesa_numero: number | null; aberta_em: string; total: number };
 type Pagamento = { forma: keyof typeof FORMAS; valor: string };
 type Janela = { tipo: "peso" | "avulso" | "produto"; conta: ResumoConta } | null;
-type Pago = { total: number; troco: number; comandas: number[] };
+type Pago = { total: number; troco: number; servico: number; comandas: number[] };
 
 const centavos = (v: number) => Math.round(v * 100) / 100;
 
@@ -29,12 +30,17 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
   const [pago, setPago] = useState<Pago | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  const [caixa, setCaixa] = useState<ResumoCaixa | null | undefined>(undefined); // undefined = carregando
+  const [turno, setTurno] = useState<"movimento" | "fechar" | null>(null);
+  const [cobrarServico, setCobrarServico] = useState(true);
   const ocupadoRef = useRef(false);
   const selecaoRef = useRef<ResumoConta[]>([]);
   selecaoRef.current = selecao;
 
   // ---------- dados ----------
   const carregar = useCallback(async () => {
+    const cx = await supabase.rpc("caixa_atual");
+    if (!cx.error) setCaixa((cx.data as ResumoCaixa | null) ?? null);
     const { data, error } = await supabase
       .from("contas")
       .select("id, comanda_numero, mesa_numero, aberta_em, itens(total, cancelado)")
@@ -53,7 +59,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
     // atualiza as contas selecionadas (pedido novo chegando enquanto está no caixa)
     const sel = selecaoRef.current;
     if (sel.length) {
-      const novos = await Promise.all(sel.map((s) => supabase.rpc("resumo_conta", { p_conta: s.conta_id })));
+      const novos = await Promise.all(sel.map((s) => supabase.rpc("resumo_conta", { p_conta: s.conta_id! })));
       setSelecao(novos.map((r, i) => (r.data as ResumoConta) ?? sel[i]).filter((c) => c.status === "aberta"));
     }
   }, [supabase]);
@@ -61,7 +67,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
   useEffect(() => {
     carregar();
   }, [carregar]);
-  useAoVivo(empresa.id, ["contas", "itens"], carregar, 20_000);
+  useAoVivo(empresa.id, ["contas", "itens", "caixas", "caixa_movimentos"], carregar, 20_000);
 
   // ---------- selecionar comandas ----------
   const adicionarConta = useCallback((c: ResumoConta) => {
@@ -127,19 +133,22 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
     const multa = Number(empresa.multa_comanda);
     const msg = multa > 0 ? `Lançar multa de ${dinheiro(multa)} na comanda ${c.comanda}? Ela será bloqueada ao pagar.` : `Marcar a comanda ${c.comanda} como perdida? Ela será bloqueada ao pagar.`;
     if (!window.confirm(msg)) return;
-    await rodar(() => supabase.rpc("comanda_perdida", { p_conta: c.conta_id }), c.conta_id);
+    await rodar(() => supabase.rpc("comanda_perdida", { p_conta: c.conta_id }), c.conta_id!);
   }
 
   // ---------- valores ----------
   const subtotal = centavos(selecao.reduce((s, c) => s + Number(c.total), 0));
+  const taxa = Number(empresa.taxa_servico) || 0;
+  const baseServico = centavos(selecao.reduce((s, c) => s + Number(c.base_servico ?? 0), 0));
+  const servico = taxa > 0 && cobrarServico ? centavos((baseServico * taxa) / 100) : 0;
   const descontoNum = centavos(Math.max(0, lerNumero(desconto) ?? 0));
-  const total = centavos(Math.max(0, subtotal - descontoNum));
+  const total = centavos(Math.max(0, subtotal + servico - descontoNum));
   const pagoNum = centavos(pagamentos.reduce((s, p) => s + (lerNumero(p.valor) ?? 0), 0));
   const falta = centavos(Math.max(0, total - pagoNum));
   const troco = centavos(Math.max(0, pagoNum - total));
   const temDinheiro = pagamentos.some((p) => p.forma === "dinheiro");
   const trocoInvalido = troco > 0 && !temDinheiro;
-  const podeFechar = selecao.length > 0 && falta === 0 && !trocoInvalido && descontoNum <= subtotal;
+  const podeFechar = !!caixa && selecao.length > 0 && falta === 0 && !trocoInvalido && descontoNum <= subtotal + servico;
 
   function addForma(forma: Pagamento["forma"]) {
     const valor = falta > 0 ? falta.toFixed(2).replace(".", ",") : "";
@@ -155,13 +164,15 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
       p_contas: selecao.map((c) => c.conta_id),
       p_pagamentos: pagamentos.map((p) => ({ forma: p.forma, valor: lerNumero(p.valor) ?? 0 })).filter((p) => p.valor > 0),
       p_desconto: descontoNum,
+      p_servico: taxa > 0 && cobrarServico,
     });
     ocupadoRef.current = false;
     setOcupado(false);
     if (error) return setErro(mensagemErro(error));
-    const r = data as { total: number; troco: number };
+    const r = data as { total: number; troco: number; servico: number };
     bip(1, 1568);
-    setPago({ total: Number(r.total), troco: Number(r.troco), comandas: selecao.map((c) => c.comanda) });
+    setPago({ total: Number(r.total), troco: Number(r.troco), servico: Number(r.servico), comandas: selecao.map((c) => c.comanda) });
+    setCobrarServico(true);
     setSelecao([]);
     setPagamentos([]);
     setDesconto("");
@@ -177,8 +188,51 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
   // ======================================================================
   return (
     <div className="flex min-h-[100dvh] flex-col">
-      <BarraOperacao titulo="Caixa" empresa={empresa.nome} gestao={gestao} />
-      <div className="grid flex-1 gap-4 p-4 lg:grid-cols-[22rem_1fr]">
+      <BarraOperacao titulo="Caixa" empresa={empresa.nome} gestao={gestao}>
+        {caixa && (
+          <>
+            <span className="hidden text-xs text-zinc-400 md:block">Caixa aberto {hora(caixa.aberto_em)}</span>
+            <button onClick={() => setTurno("movimento")} className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-zinc-300 hover:bg-white/10">
+              Sangria / reforço
+            </button>
+            <button onClick={() => setTurno("fechar")} className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-zinc-300 hover:bg-white/10">
+              Fechar caixa
+            </button>
+          </>
+        )}
+      </BarraOperacao>
+      {caixa === null && (
+        <AbrirCaixa
+          onAberto={(c) => {
+            setCaixa(c);
+            setErro(null);
+          }}
+        />
+      )}
+      {turno === "movimento" && caixa && (
+        <MovimentoCaixa
+          onFechar={() => setTurno(null)}
+          onFeito={(c) => {
+            setCaixa(c);
+            setTurno(null);
+          }}
+        />
+      )}
+      {turno === "fechar" && caixa && (
+        <FecharCaixa
+          caixa={caixa}
+          abertas={abertas.length}
+          onFechar={() => setTurno(null)}
+          onFechado={() => {
+            setTurno(null);
+            setSelecao([]);
+            setPagamentos([]);
+            setPago(null);
+            carregar();
+          }}
+        />
+      )}
+      <div className={`grid flex-1 gap-4 p-4 lg:grid-cols-[22rem_1fr] ${caixa ? "" : "hidden"}`}>
         {/* ---------- ESQUERDA: leitura e abertas ---------- */}
         <aside className="space-y-3">
           <CampoLeitura onLer={ler} ocupado={ocupado} manterFoco={!janela} />
@@ -222,6 +276,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
           {pago && (
             <div className="rounded-2xl bg-emerald-500 p-6 text-center text-black">
               <p className="text-3xl font-black">Pago ✓ {dinheiro(pago.total)}</p>
+              {pago.servico > 0 && <p className="text-sm font-medium">inclui {dinheiro(pago.servico)} de serviço</p>}
               {pago.troco > 0 && <p className="mt-2 text-4xl font-black">Troco: {dinheiro(pago.troco)}</p>}
               <p className="mt-2 text-lg font-medium">
                 Recolha a{pago.comandas.length > 1 ? "s" : ""} comanda{pago.comandas.length > 1 ? "s" : ""} {pago.comandas.map((n) => `#${n}`).join(", ")} e libere a saída.
@@ -250,7 +305,7 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
                         {c.mesa ? `mesa ${c.mesa} · ` : ""}entrou {hora(c.aberta_em)}
                       </span>
                       <span className="ml-auto text-lg font-semibold tabular-nums">{dinheiro(c.total)}</span>
-                      <button onClick={() => tirar(c.conta_id)} className="rounded-lg px-2 py-1 text-zinc-400 hover:bg-white/10" aria-label="Tirar da conta">
+                      <button onClick={() => tirar(c.conta_id!)} className="rounded-lg px-2 py-1 text-zinc-400 hover:bg-white/10" aria-label="Tirar da conta">
                         ✕
                       </button>
                     </div>
@@ -298,6 +353,15 @@ export default function Caixa({ empresa, gestao }: { empresa: Empresa; gestao: b
                   <span>Subtotal ({selecao.length} comanda{selecao.length > 1 ? "s" : ""})</span>
                   <span className="tabular-nums">{dinheiro(subtotal)}</span>
                 </div>
+                {taxa > 0 && (
+                  <label className="flex items-center justify-between gap-2 text-sm text-zinc-300">
+                    <span className="flex items-center gap-2">
+                      <input type="checkbox" checked={cobrarServico} onChange={(e) => setCobrarServico(e.target.checked)} className="h-4 w-4 accent-orange-500" />
+                      Serviço {String(taxa).replace(".", ",")}%{!cobrarServico && <span className="text-xs text-zinc-500">(cliente não quis)</span>}
+                    </span>
+                    <span className="tabular-nums">{dinheiro(servico)}</span>
+                  </label>
+                )}
                 <label className="flex items-center justify-between gap-2 text-sm text-zinc-300">
                   Desconto (R$)
                   <input value={desconto} onChange={(e) => setDesconto(e.target.value)} inputMode="decimal" placeholder="0,00" className="w-28 rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-right outline-none" />
